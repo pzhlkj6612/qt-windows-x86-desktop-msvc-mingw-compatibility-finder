@@ -1,0 +1,6 @@
+*.json
+*.md
+!LICENSE.md
+!README.md
+
+.vscode/

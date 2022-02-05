@@ -1,0 +1,136 @@
+name: Workflow
+on:
+  workflow_dispatch:
+  schedule:
+    # "At every 60th minute past every 12th hour on every 2nd day-of-month."
+    #   https://crontab.guru/#2_4_*/2_*_4
+    - cron: "2 4 */2 * 4"
+
+jobs:
+  fetch_publish:
+    name: Fetch and/or publish
+    runs-on: ubuntu-latest
+    env:
+      links_json_file_name: "links.json"
+      info_json_file_name_generated: "generated_info.json"
+      info_json_file_name_in_release: "release_info.json"
+      result_markdown_file_name: "result.md"
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Set up Python 3
+        uses: actions/setup-python@v2
+        with:
+          python-version: "3.x"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip && \
+          pip install setuptools wheel twine && \
+          pip install -r requirements.txt
+
+      - name: Fetch Qt version info from download.qt.io
+        run: |
+          python \
+            ./the_script.py \
+            --links-file "${{ env.links_json_file_name }}" \
+            --info-file "${{ env.info_json_file_name_generated }}" \
+            --result-file "${{ env.result_markdown_file_name }}"
+
+      - name: Get the latest release tag
+        id: get_latest_release_tag
+        uses: pozetroninc/github-action-get-latest-release@master
+        with:
+          repository: ${{ github.repository }}
+        continue-on-error: true # Attention!
+
+      - name: Download the latest release
+        id: downloadLatestRelease
+        if: ${{ steps.get_latest_release_tag.outcome == 'success' }}
+        uses: suisei-cn/actions-download-file@v1
+        with:
+          url: "https://github.com/${{ github.repository }}/releases/download/${{ steps.get_latest_release_tag.outputs.release }}/${{ env.info_json_file_name_in_release }}"
+          target: ${{ github.workspace }}
+
+      # https://stackoverflow.com/questions/31930041/using-jq-or-alternative-command-line-tools-to-compare-json-files#answer-37175540
+      - name: Compare now and before
+        id: compare_info_json_files
+        if: ${{ steps.get_latest_release_tag.outcome == 'success' }}
+        run: |
+          diff -u \
+            <(jq -S . ${{ env.info_json_file_name_generated }}) \
+            <(jq -S . ${{ env.info_json_file_name_in_release }}) &&
+          echo "::set-output name=unchanged::true" ||
+          echo "::set-output name=unchanged::false"
+
+      - name: Read ${{ env.result_markdown_file_name }}
+        id: read_result_file
+        if: ${{ steps.get_latest_release_tag.outcome == 'failure' ||
+          steps.compare_info_json_files.outputs.unchanged == 'false' }}
+        uses: juliangruber/read-file-action@v1
+        with:
+          path: ${{ env.result_markdown_file_name }}
+
+      - name: What time?
+        id: my_luminous_watch
+        if: ${{ steps.get_latest_release_tag.outcome == 'failure' ||
+          steps.compare_info_json_files.outputs.unchanged == 'false' }}
+        uses: 1466587594/get-current-time@v2
+        with:
+          format: "YYYYMMDDHHmmss" # 20210110223600
+
+      - name: Upload artifact "${{ env.links_json_file_name }}"
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ steps.my_luminous_watch.outputs.formattedTime }}_${{ env.links_json_file_name }}
+          path: ${{ env.links_json_file_name }}
+
+      - name: Upload artifact "${{ env.info_json_file_name_generated }}"
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ steps.my_luminous_watch.outputs.formattedTime }}_${{ env.info_json_file_name_generated }}
+          path: ${{ env.info_json_file_name_generated }}
+
+      - name: Upload artifact "${{ env.result_markdown_file_name }}"
+        uses: actions/upload-artifact@v2
+        with:
+          name: ${{ steps.my_luminous_watch.outputs.formattedTime }}_${{ env.result_markdown_file_name }}
+          path: ${{ env.result_markdown_file_name }}
+
+      - name: Publish a release
+        id: create_release
+        if: ${{ steps.get_latest_release_tag.outcome == 'failure' ||
+          steps.compare_info_json_files.outputs.unchanged == 'false' }}
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.my_luminous_watch.outputs.formattedTime }}
+          release_name: Release ${{ steps.my_luminous_watch.outputs.readableTime }}
+          body: ${{ steps.read_result_file.outputs.content }}
+          draft: false
+          prerelease: false
+
+      - name: Upload Release Asset ${{ env.info_json_file_name_generated }}
+        if: ${{ steps.get_latest_release_tag.outcome == 'failure' ||
+          steps.compare_info_json_files.outputs.unchanged == 'false' }}
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ env.info_json_file_name_generated }}
+          asset_name: ${{ env.info_json_file_name_in_release }}
+          asset_content_type: application/json
+
+      - name: Upload Release Asset ${{ env.result_markdown_file_name }}
+        if: ${{ steps.get_latest_release_tag.outcome == 'failure' ||
+          steps.compare_info_json_files.outputs.unchanged == 'false' }}
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ${{ env.result_markdown_file_name }}
+          asset_name: ${{ env.result_markdown_file_name }}
+          asset_content_type: text/markdown
